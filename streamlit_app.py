@@ -1,151 +1,242 @@
 import streamlit as st
+import joblib
+import numpy as np
 import pandas as pd
-import math
-from pathlib import Path
 
-# Set the title and favicon that appear in the Browser's tab bar.
-st.set_page_config(
-    page_title='GDP dashboard',
-    page_icon=':earth_americas:', # This is an emoji shortcode. Could be a URL too.
-)
+# Configuración de la página
+st.set_page_config(page_title="Predictor PM2.5", page_icon="🌫️", layout="wide")
 
-# -----------------------------------------------------------------------------
-# Declare some useful functions.
+# Título de la aplicación
+st.title("🌫️ Predictor de Calidad del Aire - PM2.5")
+st.markdown("Modelo Random Forest entrenado con datos históricos de contaminación")
 
-@st.cache_data
-def get_gdp_data():
-    """Grab GDP data from a CSV file.
+# Información de provincias simplificada
+PROVINCIAS_INFO = {
+    1: {"nombre": "Azuay"},
+    2: {"nombre": "Pichincha"}
+}
 
-    This uses caching to avoid having to read the file every time. If we were
-    reading from an HTTP endpoint instead of a file, it's a good idea to set
-    a maximum age to the cache with the TTL argument: @st.cache_data(ttl='1d')
-    """
+# Cargar el modelo
+@st.cache_resource
+def load_model():
+    try:
+        model = joblib.load('modelo_pm25.pkl')
+        return model
+    except Exception as e:
+        st.error(f"Error al cargar el modelo: {e}")
+        return None
 
-    # Instead of a CSV on disk, you could read from an HTTP endpoint here too.
-    DATA_FILENAME = Path(__file__).parent/'data/gdp_data.csv'
-    raw_gdp_df = pd.read_csv(DATA_FILENAME)
+# Cargar modelo
+with st.spinner('Cargando modelo PM2.5...'):
+    model = load_model()
 
-    MIN_YEAR = 1960
-    MAX_YEAR = 2022
-
-    # The data above has columns like:
-    # - Country Name
-    # - Country Code
-    # - [Stuff I don't care about]
-    # - GDP for 1960
-    # - GDP for 1961
-    # - GDP for 1962
-    # - ...
-    # - GDP for 2022
-    #
-    # ...but I want this instead:
-    # - Country Name
-    # - Country Code
-    # - Year
-    # - GDP
-    #
-    # So let's pivot all those year-columns into two: Year and GDP
-    gdp_df = raw_gdp_df.melt(
-        ['Country Code'],
-        [str(x) for x in range(MIN_YEAR, MAX_YEAR + 1)],
-        'Year',
-        'GDP',
-    )
-
-    # Convert years from string to integers
-    gdp_df['Year'] = pd.to_numeric(gdp_df['Year'])
-
-    return gdp_df
-
-gdp_df = get_gdp_data()
-
-# -----------------------------------------------------------------------------
-# Draw the actual page
-
-# Set the title that appears at the top of the page.
-'''
-# :earth_americas: GDP dashboard
-
-Browse GDP data from the [World Bank Open Data](https://data.worldbank.org/) website. As you'll
-notice, the data only goes to 2022 right now, and datapoints for certain years are often missing.
-But it's otherwise a great (and did I mention _free_?) source of data.
-'''
-
-# Add some spacing
-''
-''
-
-min_value = gdp_df['Year'].min()
-max_value = gdp_df['Year'].max()
-
-from_year, to_year = st.slider(
-    'Which years are you interested in?',
-    min_value=min_value,
-    max_value=max_value,
-    value=[min_value, max_value])
-
-countries = gdp_df['Country Code'].unique()
-
-if not len(countries):
-    st.warning("Select at least one country")
-
-selected_countries = st.multiselect(
-    'Which countries would you like to view?',
-    countries,
-    ['DEU', 'FRA', 'GBR', 'BRA', 'MEX', 'JPN'])
-
-''
-''
-''
-
-# Filter the data
-filtered_gdp_df = gdp_df[
-    (gdp_df['Country Code'].isin(selected_countries))
-    & (gdp_df['Year'] <= to_year)
-    & (from_year <= gdp_df['Year'])
-]
-
-st.header('GDP over time', divider='gray')
-
-''
-
-st.line_chart(
-    filtered_gdp_df,
-    x='Year',
-    y='GDP',
-    color='Country Code',
-)
-
-''
-''
-
-
-first_year = gdp_df[gdp_df['Year'] == from_year]
-last_year = gdp_df[gdp_df['Year'] == to_year]
-
-st.header(f'GDP in {to_year}', divider='gray')
-
-''
-
-cols = st.columns(4)
-
-for i, country in enumerate(selected_countries):
-    col = cols[i % len(cols)]
-
-    with col:
-        first_gdp = first_year[first_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-        last_gdp = last_year[last_year['Country Code'] == country]['GDP'].iat[0] / 1000000000
-
-        if math.isnan(first_gdp):
-            growth = 'n/a'
-            delta_color = 'off'
-        else:
-            growth = f'{last_gdp / first_gdp:,.2f}x'
-            delta_color = 'normal'
-
-        st.metric(
-            label=f'{country} GDP',
-            value=f'{last_gdp:,.0f}B',
-            delta=growth,
-            delta_color=delta_color
+if model is not None:
+    st.success("Modelo PM2.5 cargado correctamente!")
+    
+    # Mostrar información del modelo
+    col_info1, col_info2 = st.columns(2)
+    
+    with col_info1:
+        st.subheader("📊 Información del Modelo")
+        st.write(f"**Algoritmo:** Random Forest Regressor")
+        st.write(f"**Variable objetivo:** PM2.5")
+        st.write(f"**Características:** 7 variables")
+    
+    with col_info2:
+        st.subheader("🎯 Características usadas")
+        st.write("""
+        - Año 
+        - Mes 
+        - Estacionalidad (mes_sin/mes_cos)
+        - Provincia
+        - PM2.5 mes anterior 
+        - PM2.5 hace 2 meses 
+        """)
+    
+    st.markdown("---")
+    
+    # SECCIÓN DE PREDICCIÓN
+    st.subheader(" Realizar Predicción de PM2.5")
+    st.write("Ingresa los valores históricos para predecir el PM2.5 del mes actual:")
+    
+    # Dividir en columnas para mejor organización
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.markdown("**📅 Información Temporal y Geográfica**")
+        anio = st.number_input("Año", value=2024, min_value=2000, max_value=2030)
+        mes = st.number_input("Mes", value=6, min_value=1, max_value=12)
+        
+        # Selector de provincia simplificado
+        provincia_seleccionada = st.selectbox(
+            "Provincia",
+            options=list(PROVINCIAS_INFO.keys()),
+            format_func=lambda x: f"{PROVINCIAS_INFO[x]['nombre']}",
+            index=0,
+            help="Selecciona la provincia para la predicción"
         )
+        
+        cod_prov = provincia_seleccionada
+        provincia_nombre = PROVINCIAS_INFO[cod_prov]['nombre']
+        
+        # Calcular estacionalidad circular automáticamente
+        mes_sin = np.sin(2 * np.pi * mes / 12)
+        mes_cos = np.cos(2 * np.pi * mes / 12)
+    
+    with col2:
+        st.markdown("**📊 Valores Históricos de PM2.5**")
+        pm25_lag1 = st.number_input("PM2.5 mes anterior (μg/m³)", 
+                                   value=15.0, min_value=0.0, max_value=500.0, step=0.1,
+                                   help="Valor de PM2.5 del mes inmediatamente anterior")
+        pm25_lag2 = st.number_input("PM2.5 hace 2 meses (μg/m³)", 
+                                   value=14.0, min_value=0.0, max_value=500.0, step=0.1,
+                                   help="Valor de PM2.5 de hace dos meses")
+        
+        # Mostrar resumen de inputs
+        st.markdown("**📋 Resumen de Entradas**")
+        st.write(f"**Fecha:** {mes}/{anio}")
+        st.write(f"**Provincia:** {provincia_nombre}")
+        st.write(f"**PM2.5 histórico:** {pm25_lag1} → {pm25_lag2} μg/m³")
+    
+    # Botón de predicción
+    if st.button("🎯 Predecir PM2.5", type="primary", use_container_width=True):
+        try:
+            # Crear array de entrada en el orden EXACTO que espera el modelo
+            input_features = np.array([[
+                anio,        # Año de la medición
+                mes,         # Código del mes
+                mes_sin,     # Estacionalidad seno
+                mes_cos,     # Estacionalidad coseno
+                cod_prov,    # Código de provincia
+                pm25_lag1,   # PM2.5 del mes anterior
+                pm25_lag2    # PM2.5 de hace 2 meses
+            ]])
+            
+            # Mostrar los datos que se enviarán al modelo (para transparencia)
+            st.markdown("---")
+            st.subheader("📤 Datos Enviados al Modelo")
+            
+            feature_names = [
+                'ANIO', 'CODMES', 'mes_sin', 'mes_cos', 'COD_PROV', 
+                'PM2.5_lag1', 'PM2.5_lag2'
+            ]
+            
+            input_df = pd.DataFrame(input_features, columns=feature_names)
+            
+            # Mostrar código de provincia en lugar de nombre
+            display_df = input_df.copy()
+            
+            st.dataframe(display_df.style.format({
+                'ANIO': '{:.0f}',
+                'CODMES': '{:.0f}',
+                'mes_sin': '{:.4f}',
+                'mes_cos': '{:.4f}',
+                'COD_PROV': '{:.0f}',
+                'PM2.5_lag1': '{:.1f}',
+                'PM2.5_lag2': '{:.1f}'
+            }))
+            
+            # Realizar predicción
+            prediction = model.predict(input_features)
+            pm25_pred = prediction[0]
+            
+            # Mostrar resultado
+            st.markdown("---")
+            st.subheader("🎯 Resultado de la Predicción")
+            
+            # Métrica principal
+            col_metric, col_interpret = st.columns([1, 2])
+            
+            with col_metric:
+                st.metric(
+                    label="**Concentración Predicha de PM2.5**", 
+                    value=f"{pm25_pred:.1f} μg/m³",
+                    delta=f"{pm25_pred - pm25_lag1:+.1f} vs mes anterior"
+                )
+            
+            with col_interpret:
+                # Interpretación de la calidad del aire según TULSMA (Libro VI Anexo 4)
+                if pm25_pred <= 15:
+                    st.success("**✅ BUENA**")
+                    st.write("Cumple con la normativa TULSMA (Libro VI Anexo 4)")
+                else:
+                    st.error("**🚨 MALA**")
+                    st.write("**NO CUMPLE** con la normativa TULSMA (Libro VI Anexo 4) - Límite: 15 μg/m³")
+            
+            # Información adicional y análisis de tendencia
+            st.info(f"""
+            **📋 Análisis de la Predicción:**
+            - **Período:** Mes {mes} del {anio}
+            - **Provincia:** {provincia_nombre}
+            - **PM2.5 mes anterior:** {pm25_lag1} μg/m³
+            - **PM2.5 hace 2 meses:** {pm25_lag2} μg/m³
+            - **Normativa TULSMA:** {'✅ CUMPLE' if pm25_pred <= 15 else '❌ NO CUMPLE'}
+            """)
+            
+            
+            # Alerta especial si no cumple la normativa
+            if pm25_pred > 15:
+                st.error(f"""
+                **🚨 ALERTA - EXCEDE LÍMITE NORMATIVO**
+                
+                La predicción actual ({pm25_pred:.1f} μg/m³) **EXCEDE** el límite establecido en el 
+                **Libro VI Anexo 4 TULSMA** (15 μg/m³).
+                
+                **Recomendaciones para la población:**
+                - 🚫 **Evite actividades prolongadas al aire libre**
+                - 😷 **Use mascarilla si debe salir**
+                - 🏠 **Mantenga ventanas cerradas**
+                - 👶 **Grupos sensibles (niños, ancianos, personas con enfermedades respiratorias) deben tomar precauciones extras**
+                """)
+                
+        except Exception as e:
+            st.error(f"❌ Error en la predicción: {e}")
+            st.info("💡 Verifica que el modelo esté entrenado con estas 7 características exactas")
+
+else:
+    st.error("""
+    ❌ No se pudo cargar el modelo. Verifica que:
+    - El archivo 'modelo_pm25.pkl' esté en la carpeta correcta
+    - El modelo use exactamente 7 características de entrada
+    - Las versiones de scikit-learn sean compatibles
+    """)
+
+# Información adicional en la barra lateral
+with st.sidebar:
+    st.header("ℹ️ Información del Modelo")
+    st.markdown("""
+    **7 Características de Entrada:**
+    
+    1. **ANIO** - Año de la medición
+    2. **CODMES** - Mes (1-12)
+    3. **mes_sin** - Estacionalidad seno
+    4. **mes_cos** - Estacionalidad coseno  
+    5. **COD_PROV** - Provincia
+    6. **PM2.5_lag1** - PM2.5 mes anterior
+    7. **PM2.5_lag2** - PM2.5 hace 2 meses
+    """)
+    
+    st.markdown("---")
+    st.markdown("**📍 Provincias:**")
+    for codigo, info in PROVINCIAS_INFO.items():
+        st.write(f"• **{codigo}:** {info['nombre']}")
+    
+    st.markdown("---")
+    st.markdown("**📊 Normativa TULSMA (Libro VI Anexo 4):**")
+    st.write("• **✅ BUENA:** ≤ 15 μg/m³")
+    st.write("• **🚨 MALA:** > 15 μg/m³")
+    
+    st.markdown("---")
+    st.markdown("**🛡️ Recomendaciones cuando es MALA:**")
+    st.write("• 🚫 Evitar actividades al aire libre")
+    st.write("• 😷 Usar mascarilla si debe salir")
+    st.write("• 🏠 Mantener ventanas cerradas")
+    st.write("• 👶 Proteger grupos sensibles")
+    
+    st.markdown("---")
+    st.markdown("**🎯 Objetivo del Modelo:**")
+    st.write("Predecir el valor de PM2.5 para el mes actual usando datos históricos y estacionalidad")
+
+# Pie de página
+st.markdown("---")
+st.caption("Modelo Random Forest entrenado con datos históricos de calidad del aire | 7 características de entrada | Normativa: Libro VI Anexo 4 TULSMA")
